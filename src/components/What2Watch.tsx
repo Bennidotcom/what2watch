@@ -9,6 +9,11 @@ import {
   remainingMovieSlots,
 } from "@/lib/recommend";
 import { MOVIES_PER_BATCH } from "@/lib/constants";
+import {
+  clearRecentMovieIds,
+  getRecentMovieIds,
+  rememberMovieIds,
+} from "@/lib/recent-movies";
 import type { MoodTag, Movie } from "@/types";
 import { QuestionCard } from "./QuestionCard";
 import { ResultsView } from "./ResultsView";
@@ -29,7 +34,18 @@ export function What2Watch() {
     setSelectedTags(nextTags);
 
     if (nextStep >= TOTAL_QUESTIONS) {
-      setMovies(recommendMovies(nextTags, { count: MOVIES_PER_BATCH }));
+      const recent = getRecentMovieIds();
+      let picks = recommendMovies(nextTags, {
+        count: MOVIES_PER_BATCH,
+        softExcludeIds: recent,
+      });
+
+      if (picks.length < MOVIES_PER_BATCH) {
+        picks = recommendMovies(nextTags, { count: MOVIES_PER_BATCH });
+      }
+
+      rememberMovieIds(picks.map((movie) => movie.id));
+      setMovies(picks);
       setStep(nextStep);
       return;
     }
@@ -46,13 +62,18 @@ export function What2Watch() {
       excludeIds: movies.map((m) => m.id),
     });
 
-    setMovies((current) => [...current, ...more]);
+    setMovies((current) => {
+      const combined = [...current, ...more];
+      rememberMovieIds(combined.map((movie) => movie.id));
+      return combined;
+    });
   };
 
   const handleRestart = () => {
     setStep(0);
     setSelectedTags([]);
     setMovies([]);
+    clearRecentMovieIds();
   };
 
   const showResults = step >= TOTAL_QUESTIONS;

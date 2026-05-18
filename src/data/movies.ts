@@ -1,5 +1,6 @@
 import type { Movie } from "@/types";
 import { MOVIES_EXTRA } from "./movies-extra";
+import { MOVIES_MORE } from "./movies-more";
 
 const MOVIES_BASE: Movie[] = [
   {
@@ -231,7 +232,7 @@ const MOVIES_BASE: Movie[] = [
     tags: [
       "energy-medium",
       "emotion-light",
-      "setting-surreal",
+      "setting-intimate",
       "era-aughts",
       "audience-date",
     ],
@@ -454,4 +455,4 @@ const MOVIES_BASE: Movie[] = [
   },
 ];
 
-export const MOVIES: Movie[] = [...MOVIES_BASE, ...MOVIES_EXTRA];
+export const MOVIES: Movie[] = [...MOVIES_BASE, ...MOVIES_EXTRA, ...MOVIES_MORE];

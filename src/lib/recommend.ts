@@ -16,7 +16,16 @@ function getSelectedEra(selectedTags: MoodTag[]): MoodTag | null {
 }
 
 export function movieMatchesEra(movie: Movie, era: MoodTag): boolean {
-  return movie.tags.includes(era);
+  switch (era) {
+    case "era-classic":
+      return movie.year < 1990;
+    case "era-aughts":
+      return movie.year >= 2000 && movie.year <= 2009;
+    case "era-recent":
+      return movie.year >= 2010;
+    default:
+      return true;
+  }
 }
 
 function getMoodSelections(selectedTags: MoodTag[]): MoodTag[] {
@@ -53,7 +62,7 @@ function scoreMovie(movie: Movie, moodSelections: MoodTag[]): number {
 }
 
 function minMatchesForBatch(batchIndex: number, totalMood: number): number {
-  if (batchIndex <= 0) return totalMood;
+  if (batchIndex <= 0) return Math.max(3, totalMood - 1);
   if (batchIndex <= 2) return Math.min(3, totalMood);
   return Math.min(2, totalMood);
 }
@@ -62,16 +71,108 @@ function hasMoodConflict(movie: Movie, moodSelections: MoodTag[]): boolean {
   return moodConflictPenalty(movie, moodSelections) > 0;
 }
 
+type RankedMovie = {
+  movie: Movie;
+  matches: number;
+  score: number;
+  weight: number;
+};
+
+function buildRanked(pool: Movie[], moodSelections: MoodTag[]): RankedMovie[] {
+  return pool
+    .map((movie) => {
+      const matches = moodMatchCount(movie, moodSelections);
+      const score = scoreMovie(movie, moodSelections);
+      const weight = Math.max(1, score + matches * 3);
+      return { movie, matches, score, weight };
+    })
+    .filter(
+      ({ movie, matches }) =>
+        !hasMoodConflict(movie, moodSelections) || matches >= 3,
+    );
+}
+
+/** Weighted random sample so the same top titles are not picked every quiz. */
+function weightedSample(
+  candidates: RankedMovie[],
+  count: number,
+): Movie[] {
+  const pool = [...candidates];
+  const picked: Movie[] = [];
+
+  while (picked.length < count && pool.length > 0) {
+    const totalWeight = pool.reduce((sum, item) => sum + item.weight, 0);
+    let roll = Math.random() * totalWeight;
+
+    for (let i = 0; i < pool.length; i++) {
+      roll -= pool[i].weight;
+      if (roll <= 0) {
+        picked.push(pool[i].movie);
+        pool.splice(i, 1);
+        break;
+      }
+    }
+  }
+
+  return picked;
+}
+
+function pickWithVariety(
+  ranked: RankedMovie[],
+  count: number,
+  minMatches: number,
+): Movie[] {
+  const eligible = ranked.filter((item) => item.matches >= minMatches);
+  if (eligible.length === 0) return [];
+
+  const byMatches = new Map<number, RankedMovie[]>();
+  for (const item of eligible) {
+    const list = byMatches.get(item.matches) ?? [];
+    list.push(item);
+    byMatches.set(item.matches, list);
+  }
+
+  const matchLevels = [...byMatches.keys()].sort((a, b) => b - a);
+  const picked: Movie[] = [];
+  const seen = new Set<string>();
+
+  for (const level of matchLevels) {
+    if (picked.length >= count) break;
+
+    const bucket = byMatches.get(level)!;
+    const need = count - picked.length;
+    const sample = weightedSample(
+      bucket.filter((item) => !seen.has(item.movie.id)),
+      need,
+    );
+
+    for (const movie of sample) {
+      if (seen.has(movie.id)) continue;
+      seen.add(movie.id);
+      picked.push(movie);
+    }
+  }
+
+  return picked;
+}
+
 type RecommendOptions = {
   count?: number;
   excludeIds?: string[];
+  /** IDs to deprioritize when the pool is large enough (e.g. last quiz). */
+  softExcludeIds?: string[];
 };
 
 export function recommendMovies(
   selectedTags: MoodTag[],
-  { count = MOVIES_PER_BATCH, excludeIds = [] }: RecommendOptions = {},
+  {
+    count = MOVIES_PER_BATCH,
+    excludeIds = [],
+    softExcludeIds = [],
+  }: RecommendOptions = {},
 ): Movie[] {
   const exclude = new Set(excludeIds);
+  const softExclude = new Set(softExcludeIds);
   const selectedEra = getSelectedEra(selectedTags);
   const moodSelections = getMoodSelections(selectedTags);
   const batchIndex = Math.floor(excludeIds.length / MOVIES_PER_BATCH);
@@ -82,49 +183,34 @@ export function recommendMovies(
     return true;
   });
 
-  const ranked = pool
-    .map((movie) => ({
-      movie,
-      matches: moodMatchCount(movie, moodSelections),
-      score: scoreMovie(movie, moodSelections),
-    }))
-    .sort((a, b) => {
-      if (b.matches !== a.matches) return b.matches - a.matches;
-      if (b.score !== a.score) return b.score - a.score;
-      return a.movie.title.localeCompare(b.movie.title);
-    });
+  let ranked = buildRanked(pool, moodSelections);
 
+  if (softExclude.size > 0 && pool.length > count + softExclude.size) {
+    ranked = ranked.map((item) =>
+      softExclude.has(item.movie.id)
+        ? { ...item, weight: Math.max(1, Math.floor(item.weight * 0.15)) }
+        : item,
+    );
+  }
   const picked: Movie[] = [];
-  const seen = new Set<string>();
-
-  const tryPick = (minMatches: number) => {
-    for (const { movie, matches } of ranked) {
-      if (picked.length >= count) break;
-      if (seen.has(movie.id)) continue;
-      if (matches < minMatches) continue;
-      if (
-        matches < moodSelections.length &&
-        hasMoodConflict(movie, moodSelections)
-      ) {
-        continue;
-      }
-      seen.add(movie.id);
-      picked.push(movie);
-    }
-  };
-
   let minMatches = minMatchesForBatch(batchIndex, moodSelections.length);
 
   while (picked.length < count && minMatches >= 1) {
-    tryPick(minMatches);
+    const batch = pickWithVariety(
+      ranked.filter((item) => !picked.some((m) => m.id === item.movie.id)),
+      count - picked.length,
+      minMatches,
+    );
+    picked.push(...batch);
     minMatches -= 1;
   }
 
-  for (const { movie } of ranked) {
-    if (picked.length >= count) break;
-    if (seen.has(movie.id)) continue;
-    seen.add(movie.id);
-    picked.push(movie);
+  if (picked.length < count) {
+    const fallback = weightedSample(
+      ranked.filter((item) => !picked.some((m) => m.id === item.movie.id)),
+      count - picked.length,
+    );
+    picked.push(...fallback);
   }
 
   return picked.slice(0, count);
