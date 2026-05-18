@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import type { Movie } from "@/types";
 import { MovieCard } from "./MovieCard";
 
@@ -16,22 +17,46 @@ export function ResultsView({
   onRestart,
   canLoadMore,
 }: ResultsViewProps) {
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+
   return (
-    <section className="w-full max-w-6xl animate-fade-in overflow-visible px-4 py-8">
-      <header className="mb-8 text-center">
+    <section className="relative w-full max-w-6xl animate-fade-in overflow-visible px-4 py-8">
+      {selectedId && (
+        <button
+          type="button"
+          className="fixed inset-0 z-20 bg-black/70 md:hidden"
+          aria-label="Close movie details"
+          onClick={() => setSelectedId(null)}
+        />
+      )}
+
+      <header className="relative z-10 mb-8 text-center">
         <h2 className="text-xl font-semibold text-zinc-100 sm:text-2xl">
           Your picks for tonight
         </h2>
         <p className="mt-2 text-sm text-zinc-500">
-          Hover a poster to enlarge and read details
+          <span className="md:hidden">
+            Tap a poster for details — tap the dimmed area or another poster to
+            close
+          </span>
+          <span className="hidden md:inline">
+            Hover a poster to enlarge and read details
+          </span>
         </p>
       </header>
-      <section className="grid grid-cols-[repeat(auto-fill,minmax(140px,140px))] items-start justify-center gap-x-6 gap-y-8 overflow-visible px-4 pb-24 pt-4 sm:grid-cols-[repeat(auto-fill,minmax(160px,160px))] sm:gap-x-8">
+
+      <section className="relative z-30 grid grid-cols-[repeat(auto-fill,minmax(140px,140px))] items-start justify-center gap-x-6 gap-y-8 overflow-visible px-4 pb-24 pt-4 sm:grid-cols-[repeat(auto-fill,minmax(160px,160px))] sm:gap-x-8">
         {movies.map((movie) => (
-          <MovieCard key={movie.id} movie={movie} />
+          <MovieCard
+            key={movie.id}
+            movie={movie}
+            isSelected={selectedId === movie.id}
+            onSelect={() => setSelectedId(movie.id)}
+          />
         ))}
       </section>
-      <footer className="mt-6 flex flex-wrap items-center justify-center gap-3">
+
+      <footer className="relative z-10 mt-6 flex flex-wrap items-center justify-center gap-3">
         {canLoadMore && (
           <button
             type="button"
