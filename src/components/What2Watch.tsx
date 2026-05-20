@@ -1,13 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { QUESTIONS, TOTAL_QUESTIONS } from "@/data/questions";
-import {
-  canShowMoreMovies,
-  hasMoreRecommendations,
-  recommendMovies,
-  remainingMovieSlots,
-} from "@/lib/recommend";
 import { MOVIES_PER_BATCH } from "@/lib/constants";
 import {
   clearRecentMovieIds,
@@ -18,12 +12,103 @@ import type { MoodTag, Movie } from "@/types";
 import { QuestionCard } from "./QuestionCard";
 import { ResultsView } from "./ResultsView";
 
+type RecommendResponse = {
+  movies: Movie[];
+  canLoadMore: boolean;
+  tmdbEnabled: boolean;
+  warning?: string;
+  error?: string;
+};
+
+async function requestMovies(
+  tags: MoodTag[],
+  excludeIds: string[],
+): Promise<RecommendResponse> {
+  const res = await fetch("/api/recommend", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      tags,
+      count: MOVIES_PER_BATCH,
+      excludeIds,
+    }),
+  });
+
+  const data = (await res.json()) as RecommendResponse & { error?: string };
+
+  if (!res.ok) {
+    throw new Error(data.error ?? "Could not load movies");
+  }
+
+  if (!data.movies?.length) {
+    throw new Error(
+      data.error ??
+        "No movies found. Add TMDB_API_KEY on the server (see README).",
+    );
+  }
+
+  if (data.movies.length < MOVIES_PER_BATCH) {
+    throw new Error(
+      data.error ??
+        `Only ${data.movies.length} movies available — add TMDB_API_KEY (see README).`,
+    );
+  }
+
+  return {
+    movies: data.movies,
+    canLoadMore: data.canLoadMore ?? true,
+    tmdbEnabled: data.tmdbEnabled ?? false,
+    warning:
+      data.warning ??
+      (!data.tmdbEnabled
+        ? "TMDB_API_KEY is not set — using limited offline movies only."
+        : undefined),
+  };
+}
+
 export function What2Watch() {
   const [step, setStep] = useState(0);
   const [selectedTags, setSelectedTags] = useState<MoodTag[]>([]);
   const [movies, setMovies] = useState<Movie[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [canLoadMore, setCanLoadMore] = useState(true);
+  const [warning, setWarning] = useState<string | null>(null);
 
-  const handleAnswer = (answerId: string) => {
+  const loadMovies = useCallback(
+    async (tags: MoodTag[], excludeIds: string[]) => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const recent = getRecentMovieIds();
+        const result = await requestMovies(tags, [
+          ...new Set([...excludeIds, ...recent]),
+        ]);
+
+        if (result.movies.length < MOVIES_PER_BATCH) {
+          const fallback = await requestMovies(tags, excludeIds);
+          result.movies = fallback.movies;
+          result.warning = fallback.warning;
+        }
+
+        rememberMovieIds(result.movies.map((m) => m.id));
+        setCanLoadMore(result.canLoadMore);
+        setWarning(result.warning ?? null);
+        return result.movies;
+      } catch (err) {
+        const message =
+          err instanceof Error ? err.message : "Something went wrong";
+        setError(message);
+        return null;
+      } finally {
+        setLoading(false);
+      }
+    },
+    [],
+  );
+
+  const handleAnswer = async (answerId: string) => {
     const question = QUESTIONS[step];
     const answer = question.answers.find((a) => a.id === answerId);
     if (!answer) return;
@@ -34,18 +119,8 @@ export function What2Watch() {
     setSelectedTags(nextTags);
 
     if (nextStep >= TOTAL_QUESTIONS) {
-      const recent = getRecentMovieIds();
-      let picks = recommendMovies(nextTags, {
-        count: MOVIES_PER_BATCH,
-        softExcludeIds: recent,
-      });
-
-      if (picks.length < MOVIES_PER_BATCH) {
-        picks = recommendMovies(nextTags, { count: MOVIES_PER_BATCH });
-      }
-
-      rememberMovieIds(picks.map((movie) => movie.id));
-      setMovies(picks);
+      const picks = await loadMovies(nextTags, []);
+      if (picks) setMovies(picks);
       setStep(nextStep);
       return;
     }
@@ -53,36 +128,30 @@ export function What2Watch() {
     setStep(nextStep);
   };
 
-  const handleMore = () => {
-    const slots = remainingMovieSlots(movies.length);
-    if (slots <= 0) return;
+  const handleMore = async () => {
+    if (loading || !canLoadMore) return;
 
-    const more = recommendMovies(selectedTags, {
-      count: Math.min(MOVIES_PER_BATCH, slots),
-      excludeIds: movies.map((m) => m.id),
-    });
+    const more = await loadMovies(
+      selectedTags,
+      movies.map((m) => m.id),
+    );
 
-    setMovies((current) => {
-      const combined = [...current, ...more];
-      rememberMovieIds(combined.map((movie) => movie.id));
-      return combined;
-    });
+    if (more) {
+      setMovies((current) => [...current, ...more]);
+    }
   };
 
   const handleRestart = () => {
     setStep(0);
     setSelectedTags([]);
     setMovies([]);
+    setError(null);
+    setCanLoadMore(true);
+    setWarning(null);
     clearRecentMovieIds();
   };
 
   const showResults = step >= TOTAL_QUESTIONS;
-  const canLoadMore =
-    canShowMoreMovies(movies.length) &&
-    hasMoreRecommendations(
-      selectedTags,
-      movies.map((movie) => movie.id),
-    );
 
   return (
     <main className="flex min-h-full flex-1 flex-col items-center justify-center px-4 py-12">
@@ -100,9 +169,12 @@ export function What2Watch() {
       {showResults ? (
         <ResultsView
           movies={movies}
+          loading={loading}
+          error={error}
+          warning={warning}
           onMore={handleMore}
           onRestart={handleRestart}
-          canLoadMore={canLoadMore}
+          canLoadMore={canLoadMore && !loading}
         />
       ) : (
         <QuestionCard
